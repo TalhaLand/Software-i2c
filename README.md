@@ -15,13 +15,13 @@ CubeMX’te **PA4** ve **PA6** pinlerini normal birer dijital çıkış (`GPIO_O
 
 Projede dahili pull-up’lar kapalıdır. Bağlantıda SDA ve SCL hatlarının her biri ayrı bir pull-up direnciyle **3,3 V**’a bağlanmalıdır.
 
-![STM32F401RE üzerinde PA4 ve PA6 pinlerinin open-drain çıkış ayarları](docs/Pinler.png)
+![STM32F401RE üzerinde PA4 ve PA6 pinlerinin open-drain çıkış ayarları](Pinler.png)
 
 ## 2. STM32F401RE clock ve TIM3 ayarları
 
 F401 tarafında **8 MHz HSE** kullandım. PLL ayarlarını `M = 4`, `N = 84`, `P = 2` seçerek sistem saatini **84 MHz** yaptım. APB1 bölücüsü `/2` olduğu için APB1 çevre birimi saati **42 MHz**, TIM3’ün kullandığı APB1 timer saati ise **84 MHz** oldu.
 
-![STM32F401RE için 84 MHz sistem saati ve APB1 timer saati](docs/clock.png)
+![STM32F401RE için 84 MHz sistem saati ve APB1 timer saati](clock.png)
 
 I²C sinyalleri arasındaki süreyi mikrosaniye cinsinden ölçmek için TIM3’ü şu şekilde ayarladım:
 
@@ -119,7 +119,7 @@ Alıcı kartta CubeMX üzerinden **I2C1** birimini etkinleştirdim. İki kart ar
 | SCL | PA6 | PB8 · I2C1_SCL |
 | GND | GND | GND |
 
-![STM32F407VG üzerinde I2C1 ve USB pinleri](docs/STMF407_pin.png)
+![STM32F407VG üzerinde I2C1 ve USB pinleri](STMF407_pin.png)
 
 F407’de 7 bit adresleme kullanılır. Göndericiye verilen adres `0x28`’dir. F407 HAL yapılandırmasında bunun bir bit sola kaydırılmış karşılığı olan `0x50` (`80`) değeri `OwnAddress1` alanına yazılır.
 
@@ -138,11 +138,11 @@ F407’nin bilgisayarda sanal seri port olarak görünmesi için CubeMX’te iki
 1. **Connectivity → USB_OTG_FS** altında modu **Device_Only** seçtim. Böylece F407, **PA11 (USB_DM)** ve **PA12 (USB_DP)** pinleri üzerinden USB cihazı olarak çalışır.
 2. **Middleware and Software Packs → USB_DEVICE** bölümünü etkinleştirip Full Speed cihaz sınıfını **Communication Device Class (Virtual Port Com)** seçtim. Bu ayar projeye USB CDC desteğini ve `CDC_Transmit_FS()` fonksiyonunu ekler.
 
-![STM32F407VG USB_OTG_FS Device_Only ayarı ve USB_DEVICE seçimi](docs/usb_ayar.png)
+![STM32F407VG USB_OTG_FS Device_Only ayarı ve USB_DEVICE seçimi](usb_ayar.png)
 
 USB için gereken **48 MHz** saat de F407’nin PLL çıkışından sağlanır. Bu kartta **8 MHz HSE**, `M = 4`, `N = 72`, `P = 2` ve `Q = 3` kullanılır. Böylece sistem saati **72 MHz**, USB saati **48 MHz** olur.
 
-![STM32F407VG için 72 MHz sistem saati ve 48 MHz USB saati](docs/stm32f407_clock.png)
+![STM32F407VG için 72 MHz sistem saati ve 48 MHz USB saati](stm32f407_clock.png)
 
 Başlangıçta `MX_USB_DEVICE_Init()` USB cihazını başlatır. Sekiz bayt toplandığında ve bilgisayar USB cihazını yapılandırdığında alıcı şu çağrıyla mesajı gönderir:
 
