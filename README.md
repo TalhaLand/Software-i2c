@@ -1,111 +1,159 @@
-# STM32F401RE ile Yazılımsal I²C Haberleşmesi
+# STM32F401RE ile Software I²C
 
-Bu projede STM32F401RE üzerinde SDA ve SCL pinlerini yazılımla kontrol ederek bir I²C gönderici geliştirdim. STM32F401RE üzerindeki butona her basıldığında STM32F407VG’ye bir mesaj gönderilir. STM32F407VG, mesajı donanımsal I2C1 üzerinden alır ve USB CDC ile bilgisayardaki seri terminale aktarır.
+Bu projede STM32F401RE’nin iki GPIO pinini kullanarak yazılımsal I²C ile veri gönderdim. STM32F407VG tarafında ise veriyi donanımsal I2C1 ile alıp USB üzerinden bilgisayara aktardım.
 
-| Proje klasörü | Kart | Görevi |
+## 1. STM32F401RE’de SDA ve SCL pinlerinin ayarlanması
+
+CubeMX’te **PA4** ve **PA6** pinlerini normal birer dijital çıkış (`GPIO_Output`) olarak seçtim. Ardından GPIO ayarlarından her iki pinin çıkış modunu **Output Open Drain**, başlangıç seviyesini **High** olarak ayarladım. PA4’e `SDA`, PA6’ya `SCL` etiketini verdim.
+
+| Pin | Etiket | Görevi |
 |---|---|---|
-| `Software_i2c/` | STM32F401RE | Butonu okur ve GPIO üzerinden I²C sinyallerini üretir. |
-| `stm32f407_software/` | STM32F407VG | I2C1 ile veriyi alır ve USB üzerinden bilgisayara gönderir. |
+| PA4 | `SDA` | Adres ve veri bitlerini gönderir, alıcının ACK cevabını okur. |
+| PA6 | `SCL` | Veri aktarımı için saat darbelerini üretir. |
 
-## Bağlantılar
+**Open-drain seçiminin nedeni**, aynı hattı hem göndericinin hem de alıcının aşağı çekebilmesidir. GPIO’ya `RESET` yazdığımda hat `0` olur. `SET` yazdığımda ise pin hattı serbest bırakır ve pull-up direnci hattı `1` seviyesine çıkarır. Böylece gönderici, ACK sırasında SDA’yı serbest bıraktığında alıcı aynı hattı aşağı çekerek cevap verebilir.
 
-| Hat | STM32F401RE | STM32F407VG |
-|---|---|---|
-| SDA | PA4 | PB7 · I2C1_SDA |
-| SCL | PA6 | PB8 · I2C1_SCL |
-| GND | GND | GND |
+Projede dahili pull-up’lar kapalıdır. Bağlantıda SDA ve SCL hatlarının her biri ayrı bir pull-up direnciyle **3,3 V**’a bağlanmalıdır.
 
-SDA ve SCL hatlarının her birini ayrı bir pull-up direnciyle **3,3 V** seviyesine bağlayın. İki projede de bu pinlerin dahili pull-up dirençleri kapalıdır. F401 tarafında pinler `Output Open Drain`, F407 tarafında `Alternate Function Open Drain` olarak ayarlanmıştır.
+![STM32F401RE üzerinde PA4 ve PA6 pinlerinin open-drain çıkış ayarları](docs/Pinler.png)
 
-## Çalıştırma
+## 2. STM32F401RE clock ve TIM3 ayarları
 
-1. İki proje klasörünü STM32CubeIDE’ye aktarın. Her projeyi derleyip ilgili karta yükleyin.
-2. F407’nin **USB OTG FS** portunu veri destekleyen bir USB kablosuyla bilgisayara bağlayın.
-3. Seri terminalde F407’nin USB CDC sanal seri portunu açın.
-4. F401 üzerindeki kullanıcı butonuna basın. Her basışta terminalde yeni bir satır görünmesi beklenir.
+F401 tarafında **8 MHz HSE** kullandım. PLL ayarlarını `M = 4`, `N = 84`, `P = 2` seçerek sistem saatini **84 MHz** yaptım. APB1 bölücüsü `/2` olduğu için APB1 çevre birimi saati **42 MHz**, TIM3’ün kullandığı APB1 timer saati ise **84 MHz** oldu.
 
-```text
-kadir 0
-kadir 1
-kadir 2
+![STM32F401RE için 84 MHz sistem saati ve APB1 timer saati](docs/clock.png)
+
+I²C sinyalleri arasındaki süreyi mikrosaniye cinsinden ölçmek için TIM3’ü şu şekilde ayarladım:
+
+| TIM3 ayarı | Değer |
+|---|---|
+| Clock Source | Internal Clock |
+| Counter Mode | Up |
+| Prescaler | `84 - 1` |
+| Counter Period | `65535 - 1` |
+
+Prescaler, 84 MHz timer saatini 84’e böler. Böylece sayaç **1 MHz**’de çalışır ve `TIM3->CNT` her **1 µs**’de bir artar.
+
+## 3. `software_i2c` sürücüsü
+
+Sürücü `software_i2c.c` ve `software_i2c.h` dosyalarından oluşur. GPIO pinlerini STM32 HAL fonksiyonlarıyla kontrol eder. START, adres, veri, ACK ve STOP adımlarını yazılım üretir.
+
+### `i2c_init()` — hattı başlangıç durumuna getirme
+
+```c
+i2c_init();
 ```
 
-Sayaç `9` değerinden sonra tekrar `0` olur.
+Bu fonksiyon SDA ve SCL pinlerine `SET` yazarak iki hattı da serbest bırakır. Pull-up dirençleri sayesinde hatlar HIGH seviyesine çıkar ve I²C hattı ilk aktarım için hazır olur. Pinlerin open-drain ayarı daha önce `MX_GPIO_Init()` içinde yapılmış olmalıdır.
 
-## Yazılımsal I²C nasıl çalışıyor?
+### `mikrosaniye_timer_init()` — zamanlayıcıyı başlatma
 
-Gönderici sürücüsü `Software_i2c/Core/Src/software_i2c.c` içindedir. GPIO erişimi için STM32 HAL kullanılır. START, STOP, saat darbeleri ve ACK kontrolünü sürücü üretir. Open-drain çıkışta `RESET` hattı aşağı çeker; `SET` ise hattı serbest bırakır ve pull-up direnci hattı yukarı çeker.
-
-`i2c_send(&timer, 0x28, veri)` çağrısı bir bayt gönderir. Adres, kaydırılmadan **7 bit** olarak verilir. Sürücü adresi bir bit sola kaydırır ve yazma işlemi için hatta `0x50` çıkarır.
-
-```text
-START → 0x50 (adres + yazma biti) → ACK → veri baytı → ACK → STOP
+```c
+mikrosaniye_timer_init(&htim3);
 ```
 
-Sürücü, adres ve veri baytından sonraki dokuzuncu saat darbesinde SDA’yı okuyarak ACK kontrolü yapar. SCL’yi serbest bıraktığında pinin gerçekten yükseldiğini de kontrol eder. Aktarım 25 ms içinde tamamlanamazsa hatları serbest bırakır ve `zaman_asimi` bayrağını ayarlar.
+Fonksiyon, parametre olarak verilen timer’ı `HAL_TIM_Base_Start()` ile başlatır. `&htim3`, CubeMX’in oluşturduğu TIM3 tanıtıcısının adresidir.
 
-Örnekte `kadir ` metni, sayaç karakteri ve `\n` toplam **8 bayt** oluşturur. Her bayt kendi START ve STOP koşullarıyla ayrı bir I²C işleminde gönderilir.
+Sürücü içindeki `mikrosaniye_timer()` ise `TIM3->CNT` değerini okuyarak geçen süreyi hesaplar. İstenen süre dolduğunda `timer->sure_doldu` bayrağını set eder. Sürücü bu mekanizmayı SCL seviyesini **10 µs** aralıklarla değiştirmek ve STOP adımlarını **5 µs** aralıklarla yürütmek için kullanır.
 
-## Clock ayarları ve yazılımsal zamanlayıcı
+### `i2c_send()` — bir bayt gönderme
 
-| Ayar | STM32F401RE | STM32F407VG |
-|---|---:|---:|
-| Harici saat kaynağı (HSE) | 8 MHz | 8 MHz |
-| PLL M / N / P / Q | 4 / 84 / 2 / 4 | 4 / 72 / 2 / 3 |
-| SYSCLK / HCLK | 84 MHz | 72 MHz |
-| APB1 çevre birimi saati | 42 MHz | 36 MHz |
-| APB1 timer saati | 84 MHz | 72 MHz |
-| APB2 çevre birimi saati | 84 MHz | 72 MHz |
+```c
+void i2c_send(timer_t *timer, uint8_t address, uint8_t message);
+```
 
-**F401’de mikrosaniye ölçümü:** TIM3, APB1 timer saatinden 84 MHz alır. Prescaler `84 - 1` olduğundan sayaç 1 MHz’de çalışır. Böylece `TIM3->CNT` her **1 µs**’de bir artar. `mikrosaniye_timer()` başlangıç değerini saklar, sayaç taşmasını hesaba katar ve istenen süre dolduğunda `sure_doldu` bayrağını ayarlar.
+| Parametre | Açıklama |
+|---|---|
+| `timer` | Zamanlama bilgilerini ve aktarım sonucunu tutan `timer_t` yapısının adresi. |
+| `address` | Alıcının **7 bit I²C adresi**. Bu projede `0x28` kullanılır. |
+| `message` | Gönderilecek **tek bayt**. Bir karakter veya `uint8_t` değer olabilir. |
 
-Sürücü SCL seviyesini değiştirmek için **10 µs**, STOP adımları için **5 µs** aralık kullanır. İki yarım periyottan hesaplanan nominal SCL frekansı yaklaşık **50 kHz**’dir. GPIO işlemleri ve yazılımın çalışma süresi gerçek frekansı etkiler. Zamanlama, ana döngü içinde sayacı okuyarak yapılır. `i2c_send()` aktarım bitene veya zaman aşımına kadar çağıran kodu bekletir.
+Örneğin `i2c_send(&timer, 0x28, 'A')` çağrısında sürücü önce START üretir. `0x28` adresini bir bit sola kaydırıp yazma bitiyle birlikte `0x50` olarak gönderir. Ardından SDA’yı serbest bırakıp dokuzuncu saat darbesinde alıcının ACK cevabını okur. Adres onaylanırsa `'A'` baytını gönderir, ikinci ACK’i kontrol eder ve STOP üretir.
 
-**F407’de USB saati:** PLLQ bölücüsü `3` seçilerek USB OTG FS için gereken **48 MHz** üretilir.
+```text
+START → adres + yazma biti → ACK → veri baytı → ACK → STOP
+```
 
-## Buton ve debounce
+Fonksiyon aktarım bitene kadar bekler. Sonuç `timer.veri_iletildi`, `timer.hata_adres` ve `timer.hata_veri` alanlarından kontrol edilebilir. İşlem **25 ms** içinde tamamlanamazsa `timer.zaman_asimi` set edilir.
 
-F401 üzerindeki kullanıcı butonu **PC13** pininden okunur ve basıldığında `0` seviyesine geçer. Mekanik kontak titreşiminin birden fazla gönderim başlatmasını önlemek için yazılımsal debounce uygulanır.
+## 4. Sürücüyü projeye dahil etme
 
-- Ham pin değeri her değiştiğinde `HAL_GetTick()` ile son değişim zamanı kaydedilir.
-- Değer **50 ms** boyunca sabit kalırsa yeni buton durumu kabul edilir.
-- Basılı duruma geçildiğinde **PA5** üzerindeki LED durum değiştirir ve mesaj bir kez gönderilir. Yeni bir gönderim için butonun bırakılıp tekrar basılması gerekir.
-
-## Alıcı ve USB CDC
-
-F407 üzerinde I2C1, **7 bit adresleme** ile alıcı olarak çalışır. `OwnAddress1 = 80` değeri `0x50`’ye, yani göndericide kullanılan `0x28` adresinin bir bit sola kaydırılmış hâline karşılık gelir.
-
-`HAL_I2C_Slave_Receive()` her çağrıda bir bayt alır. Sekiz bayt tamamlandığında **PD12** üzerindeki LED durum değiştirir. USB bağlantısı yapılandırılmışsa `CDC_Transmit_FS()` bu sekiz baytı bilgisayara gönderir. Alıcı mesaj sınırını bayt sayısına göre belirlediği için bir bayt kaybolursa sonraki mesajların hizası kayabilir.
-
-USB ayarı `USB_OTG_FS → Device_Only`, cihaz sınıfı ise **CDC (Virtual COM Port)** olarak seçilmiştir. USB veri pinleri **PA11 (D−)** ve **PA12 (D+)**’dır.
-
-## Sürücüyü başka bir projeye ekleme
-
-1. `Software_i2c/Core/Inc/software_i2c.h` dosyasını projenizin `Core/Inc/` klasörüne, `Software_i2c/Core/Src/software_i2c.c` dosyasını `Core/Src/` klasörüne kopyalayın.
-2. CubeMX’te iki GPIO pinini `Output Open Drain` olarak ayarlayın. Başlangıç seviyesini `High` seçin ve pinlere `SDA` ile `SCL` etiketlerini verin.
-3. TIM3’ü yukarı sayacak şekilde ayarlayın. Sayaç frekansı **1 MHz** olmalı. Örnekte prescaler `84 - 1`, counter period `65535 - 1` olarak ayarlıdır. Sürücü doğrudan `TIM3->CNT` okuduğu için başka timer kullanırsanız bu satırı da güncelleyin.
-4. GPIO ve TIM3 başlatıldıktan sonra sürücüyü aşağıdaki gibi kullanın.
+1. `software_i2c.h` dosyasını `Core/Inc/`, `software_i2c.c` dosyasını `Core/Src/` klasörüne kopyalayın.
+2. CubeMX’te SDA ve SCL pinlerini ilk bölümdeki gibi ayarlayın. `SDA` ve `SCL` etiketlerini kullanın. Sürücü, bu etiketlerden üretilen `SDA_Pin`, `SDA_GPIO_Port`, `SCL_Pin` ve `SCL_GPIO_Port` tanımlarını kullanır.
+3. TIM3’ü **1 µs sayaç adımıyla** yapılandırın. Farklı bir timer kullanacaksanız sürücüdeki `TIM3->CNT` okumasını da değiştirin.
+4. `main.c` dosyasında `main.h` sonrasına sürücü başlığını ekleyin ve zamanlayıcı yapısını tanımlayın.
 
 ```c
 #include "main.h"
 #include "software_i2c.h"
 
 static timer_t timer;
+```
 
-/* main() içinde, MX_GPIO_Init() ve MX_TIM3_Init() sonrasında */
+`main()` içinde, CubeMX’in `MX_GPIO_Init()` ve `MX_TIM3_Init()` çağrılarından sonra sürücüyü başlatın:
+
+```c
 mikrosaniye_timer_init(&htim3);
 i2c_init();
+```
 
-/* 7 bit adresi 0x28 olan alıcıya bir bayt gönder */
+Artık her çağrıda bir bayt gönderebilirsiniz:
+
+```c
 i2c_send(&timer, 0x28, 'A');
 ```
 
-Aktarım sonucunu `timer.veri_iletildi`, `timer.hata_adres`, `timer.hata_veri` ve `timer.zaman_asimi` alanlarından kontrol edebilirsiniz. Bu sürüm **tek bayt yazma** işlemini destekler. Örnekteki F407 yazılımıyla deneme yaparken terminal çıktısı için sekiz bayt gönderin.
+### Örnekte buton ve debounce kullanımı
 
-## CubeMX ekran görüntüleri
+F401 projesinde gönderimi **PC13** üzerindeki kullanıcı butonu başlatır. Butonun ham değeri her değiştiğinde `HAL_GetTick()` ile zaman kaydedilir. Değer **50 ms** boyunca sabit kaldığında yeni durum kabul edilir. Böylece mekanik kontak titreşimi tek basışta birden fazla mesaj gönderilmesine yol açmaz.
 
-| STM32F401RE | STM32F407VG |
-|---|---|
-| [GPIO pin ayarları](docs/Pinler.png) | [I2C1 ve USB pinleri](docs/STMF407_pin.png) |
-| [84 MHz clock ayarları](docs/clock.png) | [72 MHz clock ayarları](docs/stm32f407_clock.png) |
-| | [USB OTG FS ayarları](docs/usb_ayar.png) |
+Butona basıldığında PA5 üzerindeki LED durum değiştirir. Ardından `kadir ` metni, bir sayaç karakteri ve satır sonu (`\n`) olmak üzere **8 bayt** gönderilir. Her bayt için `i2c_send()` ayrı çağrılır. Sayaç `0` ile `9` arasında döner.
+
+## 5. STM32F407VG tarafında verinin alınması
+
+Alıcı kartta CubeMX üzerinden **I2C1** birimini etkinleştirdim. İki kart arasındaki bağlantı şu şekildedir:
+
+| Hat | STM32F401RE · Gönderici | STM32F407VG · Alıcı |
+|---|---|---|
+| SDA | PA4 | PB7 · I2C1_SDA |
+| SCL | PA6 | PB8 · I2C1_SCL |
+| GND | GND | GND |
+
+![STM32F407VG üzerinde I2C1 ve USB pinleri](docs/STMF407_pin.png)
+
+F407’de 7 bit adresleme kullanılır. Göndericiye verilen adres `0x28`’dir. F407 HAL yapılandırmasında bunun bir bit sola kaydırılmış karşılığı olan `0x50` (`80`) değeri `OwnAddress1` alanına yazılır.
+
+Alıcı, ana döngüde her çağrıda bir bayt bekler:
+
+```c
+durum = HAL_I2C_Slave_Receive(&hi2c1, &gelen_mesaj[i], 1, 1000);
+```
+
+Burada `&hi2c1` kullanılan I²C birimini, `&gelen_mesaj[i]` alınan baytın yazılacağı yeri, `1` beklenecek bayt sayısını ve `1000` milisaniye cinsinden zaman aşımını belirtir. Fonksiyon `HAL_OK` döndürdüğünde indeks artırılır. **8 bayt** tamamlandığında PD12 üzerindeki LED durum değiştirir ve mesaj USB üzerinden gönderilmek üzere hazır olur.
+
+## 6. F407’den USB ile bilgisayara gönderme
+
+F407’nin bilgisayarda sanal seri port olarak görünmesi için CubeMX’te iki ayar yaptım:
+
+1. **Connectivity → USB_OTG_FS** altında modu **Device_Only** seçtim. Böylece F407, **PA11 (USB_DM)** ve **PA12 (USB_DP)** pinleri üzerinden USB cihazı olarak çalışır.
+2. **Middleware and Software Packs → USB_DEVICE** bölümünü etkinleştirip Full Speed cihaz sınıfını **Communication Device Class (Virtual Port Com)** seçtim. Bu ayar projeye USB CDC desteğini ve `CDC_Transmit_FS()` fonksiyonunu ekler.
+
+![STM32F407VG USB_OTG_FS Device_Only ayarı ve USB_DEVICE seçimi](docs/usb_ayar.png)
+
+USB için gereken **48 MHz** saat de F407’nin PLL çıkışından sağlanır. Bu kartta **8 MHz HSE**, `M = 4`, `N = 72`, `P = 2` ve `Q = 3` kullanılır. Böylece sistem saati **72 MHz**, USB saati **48 MHz** olur.
+
+![STM32F407VG için 72 MHz sistem saati ve 48 MHz USB saati](docs/stm32f407_clock.png)
+
+Başlangıçta `MX_USB_DEVICE_Init()` USB cihazını başlatır. Sekiz bayt toplandığında ve bilgisayar USB cihazını yapılandırdığında alıcı şu çağrıyla mesajı gönderir:
+
+```c
+CDC_Transmit_FS(gelen_mesaj, sizeof(gelen_mesaj));
+```
+
+Çıktıyı görmek için her projeyi ilgili karta yükleyin, F407’nin **USB OTG FS portunu** veri destekleyen bir kabloyla bilgisayara bağlayın ve seri terminalde o karta ait sanal portu açın. F401 üzerindeki butona art arda basıldığında beklenen çıktı:
+
+```text
+kadir 0
+kadir 1
+kadir 2
+```
